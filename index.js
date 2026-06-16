@@ -7,7 +7,8 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ── Estado da aplicação ──
 let clientReady = false;
@@ -206,6 +207,300 @@ app.post('/api/enviar-mensagem-bulk', requireReady, async (req, res) => {
     }
 });
 
+// ── Envio de mídia (genérico) ──
+// Tipos suportados: imagem, audio, video, documento, sticker
+// Aceita URL (url) OU arquivo base64 (base64 + mimetype + filename)
+app.post('/api/enviar-midia', requireReady, async (req, res) => {
+    try {
+        const { numero, tipo, url, base64, mimetype, filename, legenda } = req.body;
+
+        if (!numero) {
+            return res.status(400).json({ success: false, error: 'Campo "numero" é obrigatório' });
+        }
+        if (!tipo) {
+            return res.status(400).json({ success: false, error: 'Campo "tipo" é obrigatório (imagem, audio, video, documento, sticker)' });
+        }
+
+        const numeroFormatado = formatarNumero(numero);
+        let media;
+
+        if (base64) {
+            const mime = mimetype || 'application/octet-stream';
+            media = new MessageMedia(mime, base64, filename || 'arquivo');
+        } else if (url) {
+            media = await MessageMedia.fromUrl(url, { unsafeMime: true });
+        } else {
+            return res.status(400).json({ success: false, error: 'Forneça "url" ou "base64"' });
+        }
+
+        const chat = await client.getChatById(numeroFormatado);
+
+        let msgEnviada;
+        const opts = legenda ? { caption: legenda } : {};
+
+        switch (tipo.toLowerCase()) {
+            case 'imagem':
+            case 'image':
+                msgEnviada = await chat.sendMessage(media, { ...opts, sendMediaAsSticker: false });
+                break;
+            case 'audio':
+            case 'audio':
+                msgEnviada = await chat.sendMessage(media, { sendAudioAsVoice: true });
+                break;
+            case 'video':
+                msgEnviada = await chat.sendMessage(media, { ...opts, sendMediaAsSticker: false });
+                break;
+            case 'documento':
+            case 'document':
+                msgEnviada = await chat.sendMessage(media, { ...opts, sendMediaAsDocument: true });
+                break;
+            case 'sticker':
+                msgEnviada = await chat.sendMessage(media, { sendMediaAsSticker: true });
+                break;
+            default:
+                return res.status(400).json({ success: false, error: `Tipo "${tipo}" não suportado. Use: imagem, audio, video, documento, sticker` });
+        }
+
+        res.json({
+            success: true,
+            mensagem: `${tipo} enviado com sucesso`,
+            dados: { id: msgEnviada.id._serialized, numero: numeroFormatado, tipo }
+        });
+
+    } catch (error) {
+        console.error('[ERRO] Envio de mídia:', error.message);
+        res.status(500).json({ success: false, error: 'Erro ao enviar mídia', detalhes: error.message });
+    }
+});
+
+// Enviar imagem
+app.post('/api/enviar-imagem', requireReady, async (req, res) => {
+    req.body.tipo = 'imagem';
+    await handleMidia(req, res);
+});
+
+// Enviar áudio
+app.post('/api/enviar-audio', requireReady, async (req, res) => {
+    req.body.tipo = 'audio';
+    await handleMidia(req, res);
+});
+
+// Enviar vídeo
+app.post('/api/enviar-video', requireReady, async (req, res) => {
+    req.body.tipo = 'video';
+    await handleMidia(req, res);
+});
+
+// Enviar documento
+app.post('/api/enviar-documento', requireReady, async (req, res) => {
+    req.body.tipo = 'documento';
+    await handleMidia(req, res);
+});
+
+// Enviar sticker
+app.post('/api/enviar-sticker', requireReady, async (req, res) => {
+    req.body.tipo = 'sticker';
+    await handleMidia(req, res);
+});
+
+async function handleMidia(req, res) {
+    try {
+        const { numero, url, base64, mimetype, filename, legenda, tipo } = req.body;
+
+        if (!numero) {
+            return res.status(400).json({ success: false, error: 'Campo "numero" é obrigatório' });
+        }
+
+        const numeroFormatado = formatarNumero(numero);
+        let media;
+
+        if (base64) {
+            const mime = mimetype || mimePorTipo(tipo);
+            media = new MessageMedia(mime, base64, filename || nomePadrao(tipo));
+        } else if (url) {
+            media = await MessageMedia.fromUrl(url, { unsafeMime: true });
+        } else {
+            return res.status(400).json({ success: false, error: 'Forneça "url" ou "base64"' });
+        }
+
+        const chat = await client.getChatById(numeroFormatado);
+        let msgEnviada;
+
+        switch (tipo) {
+            case 'imagem':
+                msgEnviada = await chat.sendMessage(media, { caption: legenda || '' });
+                break;
+            case 'audio':
+                msgEnviada = await chat.sendMessage(media, { sendAudioAsVoice: true });
+                break;
+            case 'video':
+                msgEnviada = await chat.sendMessage(media, { caption: legenda || '' });
+                break;
+            case 'documento':
+                msgEnviada = await chat.sendMessage(media, { sendMediaAsDocument: true, caption: legenda || '' });
+                break;
+            case 'sticker':
+                msgEnviada = await chat.sendMessage(media, { sendMediaAsSticker: true });
+                break;
+        }
+
+        res.json({
+            success: true,
+            mensagem: `${tipo} enviado com sucesso`,
+            dados: { id: msgEnviada.id._serialized, numero: numeroFormatado, tipo }
+        });
+
+    } catch (error) {
+        console.error(`[ERRO] Envio de ${req.body.tipo}:`, error.message);
+        res.status(500).json({ success: false, error: `Erro ao enviar ${req.body.tipo}`, detalhes: error.message });
+    }
+}
+
+// Enviar localização
+app.post('/api/enviar-localizacao', requireReady, async (req, res) => {
+    try {
+        const { numero, latitude, longitude, nome, endereco } = req.body;
+
+        if (!numero || latitude == null || longitude == null) {
+            return res.status(400).json({ success: false, error: 'Campos obrigatórios: "numero", "latitude", "longitude"' });
+        }
+
+        const numeroFormatado = formatarNumero(numero);
+        const chat = await client.getChatById(numeroFormatado);
+
+        const location = new (require('whatsapp-web.js').Location)(
+            parseFloat(latitude),
+            parseFloat(longitude),
+            { name: nome || 'Localização', address: endereco || '' }
+        );
+
+        const msgEnviada = await chat.sendMessage(location);
+
+        res.json({
+            success: true,
+            mensagem: 'Localização enviada com sucesso',
+            dados: { id: msgEnviada.id._serialized, numero: numeroFormatado }
+        });
+    } catch (error) {
+        console.error('[ERRO] Envio de localização:', error.message);
+        res.status(500).json({ success: false, error: 'Erro ao enviar localização', detalhes: error.message });
+    }
+});
+
+// Enviar contato
+app.post('/api/enviar-contato', requireReady, async (req, res) => {
+    try {
+        const { numero, contato_numero, contato_nome } = req.body;
+
+        if (!numero || !contato_numero || !contato_nome) {
+            return res.status(400).json({ success: false, error: 'Campos obrigatórios: "numero", "contato_numero", "contato_nome"' });
+        }
+
+        const numeroFormatado = formatarNumero(numero);
+        const chat = await client.getChatById(numeroFormatado);
+
+        const contact = new (require('whatsapp-web.js').Contact)();
+        contact.id = { _serialized: formatarNumero(contato_numero) };
+        contact.number = contato_numero;
+        contact.name = contato_nome;
+
+        const msgEnviada = await chat.sendMessage(contact);
+
+        res.json({
+            success: true,
+            mensagem: 'Contato enviado com sucesso',
+            dados: { id: msgEnviada.id._serialized, numero: numeroFormatado }
+        });
+    } catch (error) {
+        console.error('[ERRO] Envio de contato:', error.message);
+        res.status(500).json({ success: false, error: 'Erro ao enviar contato', detalhes: error.message });
+    }
+});
+
+// Enviar enquete
+app.post('/api/enviar-enquete', requireReady, async (req, res) => {
+    try {
+        const { numero, titulo, opcoes, multipla } = req.body;
+
+        if (!numero || !titulo || !opcoes || !Array.isArray(opcoes) || opcoes.length < 2) {
+            return res.status(400).json({ success: false, error: 'Campos obrigatórios: "numero", "titulo", "opcoes" (array com no mínimo 2 opções)' });
+        }
+
+        const numeroFormatado = formatarNumero(numero);
+        const chat = await client.getChatById(numeroFormatado);
+
+        const poll = new (require('whatsapp-web.js').Poll)(titulo, opcoes, {
+            allowMultipleAnswers: !!multipla
+        });
+
+        const msgEnviada = await chat.sendMessage(poll);
+
+        res.json({
+            success: true,
+            mensagem: 'Enquete enviada com sucesso',
+            dados: { id: msgEnviada.id._serialized, numero: numeroFormatado }
+        });
+    } catch (error) {
+        console.error('[ERRO] Envio de enquete:', error.message);
+        res.status(500).json({ success: false, error: 'Erro ao enviar enquete', detalhes: error.message });
+    }
+});
+
+// Enviar mensagem com botões (lista interativa)
+app.post('/api/enviar-lista', requireReady, async (req, res) => {
+    try {
+        const { numero, titulo, texto, botao, secoes } = req.body;
+
+        if (!numero || !titulo || !botao || !secoes) {
+            return res.status(400).json({ success: false, error: 'Campos obrigatórios: "numero", "titulo", "botao", "secoes"' });
+        }
+
+        const numeroFormatado = formatarNumero(numero);
+        const chat = await client.getChatById(numeroFormatado);
+
+        const list = new (require('whatsapp-web.js').List)(
+            texto || titulo,
+            botao,
+            secoes,
+            titulo
+        );
+
+        const msgEnviada = await chat.sendMessage(list);
+
+        res.json({
+            success: true,
+            mensagem: 'Lista interativa enviada com sucesso',
+            dados: { id: msgEnviada.id._serialized, numero: numeroFormatado }
+        });
+    } catch (error) {
+        console.error('[ERRO] Envio de lista:', error.message);
+        res.status(500).json({ success: false, error: 'Erro ao enviar lista', detalhes: error.message });
+    }
+});
+
+// ── Helpers de mídia ──
+function mimePorTipo(tipo) {
+    const map = {
+        imagem: 'image/jpeg',
+        audio: 'audio/mp3',
+        video: 'video/mp4',
+        documento: 'application/pdf',
+        sticker: 'image/webp'
+    };
+    return map[tipo] || 'application/octet-stream';
+}
+
+function nomePadrao(tipo) {
+    const map = {
+        imagem: 'imagem.jpg',
+        audio: 'audio.mp3',
+        video: 'video.mp4',
+        documento: 'documento.pdf',
+        sticker: 'sticker.webp'
+    };
+    return map[tipo] || 'arquivo';
+}
+
 // Verificar se um número existe no WhatsApp
 app.get('/api/verificar-numero/:numero', requireReady, async (req, res) => {
     try {
@@ -278,11 +573,21 @@ const HOST = process.env.HOST || '0.0.0.0';
 app.listen(PORTA, HOST, () => {
     console.log(`[API] Servidor rodando em http://${HOST}:${PORTA}`);
     console.log('[API] Endpoints disponíveis:');
-    console.log('  GET  /api/status           - Status da conexão');
-    console.log('  GET  /api/qr               - Obter QR Code');
+    console.log('  GET  /api/status                  - Status da conexão');
+    console.log('  GET  /api/qr                      - Obter QR Code');
     console.log('  GET  /api/verificar-numero/:numero - Verificar número');
-    console.log('  POST /api/enviar-mensagem   - Enviar mensagem');
-    console.log('  POST /api/enviar-mensagem-bulk - Enviar em lote');
-    console.log('  POST /api/logout            - Desconectar');
-    console.log('  POST /api/reiniciar         - Reiniciar cliente');
+    console.log('  POST /api/enviar-mensagem         - Enviar mensagem de texto');
+    console.log('  POST /api/enviar-mensagem-bulk    - Enviar texto em lote');
+    console.log('  POST /api/enviar-midia            - Enviar mídia genérica');
+    console.log('  POST /api/enviar-imagem           - Enviar imagem');
+    console.log('  POST /api/enviar-audio            - Enviar áudio');
+    console.log('  POST /api/enviar-video            - Enviar vídeo');
+    console.log('  POST /api/enviar-documento        - Enviar documento');
+    console.log('  POST /api/enviar-sticker          - Enviar sticker');
+    console.log('  POST /api/enviar-localizacao      - Enviar localização');
+    console.log('  POST /api/enviar-contato          - Enviar contato');
+    console.log('  POST /api/enviar-enquete          - Enviar enquete');
+    console.log('  POST /api/enviar-lista            - Enviar lista interativa');
+    console.log('  POST /api/logout                  - Desconectar');
+    console.log('  POST /api/reiniciar               - Reiniciar cliente');
 });
