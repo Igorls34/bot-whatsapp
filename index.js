@@ -921,6 +921,51 @@ app.post('/api/enviar-lista', requireReady, async (req, res) => {
     }
 });
 
+// Enviar botões (reply buttons)
+app.post('/api/enviar-botoes', requireReady, async (req, res) => {
+    try {
+        const { numero, texto, botoes, titulo, rodape } = req.body;
+
+        if (!numero || !texto || !botoes || !Array.isArray(botoes)) {
+            return res.status(400).json({ success: false, error: 'Campos obrigatórios: "numero", "texto", "botoes" (array)' });
+        }
+
+        if (botoes.length === 0 || botoes.length > 3) {
+            return res.status(400).json({ success: false, error: 'Mínimo 1, máximo 3 botões' });
+        }
+
+        const validacao = validarNumero(numero);
+        if (!validacao.valido) {
+            return res.status(400).json({ success: false, error: validacao.erro });
+        }
+
+        const numeroFormatado = formatarNumero(validacao.limpo);
+
+        const buttonsList = botoes.map(b => {
+            if (typeof b === 'string') return { body: b };
+            return b;
+        });
+
+        const msgEnviada = await enviarComRetry(async () => {
+            const chat = await client.getChatById(numeroFormatado);
+            const buttons = new (require('whatsapp-web.js').Buttons)(texto, buttonsList, titulo || null, rodape || null);
+            return await chat.sendMessage(buttons);
+        });
+
+        totalMensagensEnviadas++;
+
+        res.json({
+            success: true,
+            mensagem: 'Botões enviados com sucesso',
+            dados: { id: msgEnviada.id._serialized, numero: numeroFormatado }
+        });
+    } catch (error) {
+        const analise = analisarErroWhatsapp(error, req.body.numero);
+        totalErros++;
+        res.status(500).json({ success: false, error: analise.mensagem, tipo: analise.tipo, acao: analise.acao });
+    }
+});
+
 // Verificar se um número existe no WhatsApp
 app.get('/api/verificar-numero/:numero', requireReady, async (req, res) => {
     try {
@@ -1071,6 +1116,7 @@ const server = app.listen(PORTA, HOST, () => {
     console.log('  POST /api/enviar-contato          - Enviar contato');
     console.log('  POST /api/enviar-enquete          - Enviar enquete');
     console.log('  POST /api/enviar-lista            - Enviar lista interativa');
+    console.log('  POST /api/enviar-botoes           - Enviar botões de resposta');
     console.log('  POST /api/logout                  - Desconectar');
     console.log('  POST /api/reiniciar               - Reiniciar cliente');
     console.log('');
