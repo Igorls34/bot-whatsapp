@@ -94,6 +94,8 @@ switch ($Comando.ToLower()) {
         if (!$Numero) { Write-Host "Uso: .\bot.ps1 lista 55119... -Titulo 'Menu' -Mensagem 'Escolha:' -Botao 'Ver'" -ForegroundColor Yellow; return }
         Send-Post "/api/enviar-lista" @{numero=$Numero; titulo=$Titulo; texto=$Mensagem; botao=$Botao; secoes=$Secoes}
     }
+
+    "enquete" {
         if (!$Numero -or !$Titulo -or !$Opcoes) { Write-Host "Uso: .\bot.ps1 enquete 55119... -Titulo 'Pergunta?' -Opcoes 'A','B','C'" -ForegroundColor Yellow; return }
         Send-Post "/api/enviar-enquete" @{numero=$Numero; titulo=$Titulo; opcoes=$Opcoes}
     }
