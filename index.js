@@ -4,6 +4,8 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const express = require('express');
 const qrcode = require('qrcode-terminal');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 // ── Configurações ──
 const CONFIG = {
@@ -19,6 +21,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: CONFIG.MAX_BODY_SIZE }));
 app.use(express.urlencoded({ limit: CONFIG.MAX_BODY_SIZE, extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Estado da aplicação ──
 let clientReady = false;
@@ -30,6 +33,43 @@ let totalMensagensEnviadas = 0;
 let totalErros = 0;
 let ultimoErro = null;
 let startTime = new Date();
+
+// ── Sistema de bloqueio de contatos ──
+const BLOCKLIST_FILE = path.join(__dirname, 'blocklist.json');
+let blockedContacts = new Set();
+
+function loadBlocklist() {
+    try {
+        if (fs.existsSync(BLOCKLIST_FILE)) {
+            const data = JSON.parse(fs.readFileSync(BLOCKLIST_FILE, 'utf8'));
+            blockedContacts = new Set(data.numeros || []);
+            console.log(`[BLOCKLIST] ${blockedContacts.size} contato(s) bloqueado(s) carregado(s)`);
+        }
+    } catch (err) {
+        console.error('[BLOCKLIST] Erro ao carregar:', err.message);
+        blockedContacts = new Set();
+    }
+}
+
+function saveBlocklist() {
+    try {
+        fs.writeFileSync(BLOCKLIST_FILE, JSON.stringify({ numeros: [...blockedContacts] }, null, 2));
+    } catch (err) {
+        console.error('[BLOCKLIST] Erro ao salvar:', err.message);
+    }
+}
+
+function isBlocked(numero) {
+    const limpo = String(numero).replace(/\D/g, '');
+    return blockedContacts.has(limpo);
+}
+
+loadBlocklist();
+
+// ── Cache de contatos ──
+let contactsCache = [];
+let contactsCacheTime = 0;
+const CONTACTS_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
 // ── Handlers globais de erro ──
 process.on('uncaughtException', (err) => {
@@ -148,6 +188,15 @@ function setupClientEvents() {
     client.on('loading_screen', (percent, message) => {
         console.log(`[LOADING] ${percent}% - ${message}`);
     });
+
+    client.on('message', async (msg) => {
+        try {
+            if (!clientReady) return;
+            await handleIncomingMessage(msg);
+        } catch (err) {
+            console.error('[ASSISTENTE] Erro ao processar mensagem:', err.message);
+        }
+    });
 }
 
 async function tentarReconectar() {
@@ -186,6 +235,208 @@ client.initialize().catch(err => {
     ultimoErro = { tipo: 'init_error', mensagem: err.message, timestamp: new Date().toISOString() };
     setTimeout(() => tentarReconectar(), CONFIG.RECONNECT_DELAY_MS);
 });
+
+// ── Assistente Virtual Igor Dev ──
+const conversations = new Map();
+
+function getConv(chatId) {
+    if (!conversations.has(chatId)) {
+        conversations.set(chatId, { step: 'idle', data: {} });
+    }
+    return conversations.get(chatId);
+}
+
+async function enviarPlanilha(nome, email) {
+    const PLANILHA_PATH = process.env.PLANILHA_PATH || '/root/planilha-gratuita.xlsx';
+
+    try {
+        const http = require('http');
+        const fs = require('fs');
+
+        if (!fs.existsSync(PLANILHA_PATH)) {
+            console.error(`[ASSISTENTE] Arquivo da planilha não encontrado: ${PLANILHA_PATH}`);
+            return false;
+        }
+
+        const arquivo = fs.readFileSync(PLANILHA_PATH);
+        const base64 = arquivo.toString('base64');
+
+        const data = JSON.stringify({
+            para: email,
+            assunto: 'Sua planilha gratuita - Igor Dev',
+            corpo: `Olá ${nome},\n\nSegue em anexo a planilha gratuita que você solicitou.\n\nQualquer dúvida, estamos à disposição.\n\nAtenciosamente,\nIgor Dev`,
+            anexos: [{
+                filename: 'planilha-igor-dev.xlsx',
+                content: base64,
+                encoding: 'base64',
+                contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            }]
+        });
+
+        return new Promise((resolve) => {
+            const req = http.request({
+                hostname: 'localhost',
+                port: 3001,
+                path: '/api/enviar-email-anexo',
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+                timeout: 30000,
+            }, (res) => {
+                let body = '';
+                res.on('data', c => body += c);
+                res.on('end', () => {
+                    try {
+                        const json = JSON.parse(body);
+                        resolve(json.success === true);
+                    } catch (e) {
+                        resolve(false);
+                    }
+                });
+            });
+            req.on('error', () => resolve(false));
+            req.on('timeout', () => { req.destroy(); resolve(false); });
+            req.write(data);
+            req.end();
+        });
+    } catch (err) {
+        console.error('[ASSISTENTE] Erro ao enviar planilha:', err.message);
+        return false;
+    }
+}
+
+async function handleIncomingMessage(msg) {
+    if (msg.from === 'status@broadcast' || msg.isStatus) return;
+    if (msg.fromMe) return;
+    if (!msg.body || msg.body.trim().length === 0) return;
+
+    const chatId = msg.from;
+
+    // Verifica se o contato está bloqueado
+    if (isBlocked(chatId.replace('@c.us', ''))) return;
+
+    const texto = msg.body.trim();
+    const conv = getConv(chatId);
+
+    if (conv.step === 'closing') {
+        const horas = (Date.now() - conv.closedAt) / (1000 * 60 * 60);
+        if (horas >= 3) {
+            conversations.delete(chatId);
+        } else {
+            return;
+        }
+    }
+
+    const textoLower = texto.toLowerCase();
+    const isPlanilha = textoLower.includes('planilha gratuita') || textoLower.includes('planilha gratis');
+
+    if (conv.step === 'idle' && isPlanilha) {
+        conv.step = 'planilha_waiting_name';
+        conv.data = {};
+        await msg.reply(
+            'Olá! 👋\n\n' +
+            'Vi que você tem interesse na *planilha gratuita*.\n\n' +
+            'Para enviarmos, qual o *seu nome*?'
+        );
+        return;
+    }
+
+    if (conv.step === 'planilha_waiting_name') {
+        conv.data.nome = texto;
+        conv.step = 'planilha_waiting_email';
+        await msg.reply(`Obrigado, *${texto}*!\n\nPara qual *e-mail* devemos enviar a planilha?`);
+        return;
+    }
+
+    if (conv.step === 'planilha_waiting_email') {
+        conv.data.email = texto.trim().toLowerCase();
+        conv.step = 'closing';
+        conv.closedAt = Date.now();
+
+        const enviado = await enviarPlanilha(conv.data.nome, conv.data.email);
+
+        if (enviado) {
+            console.log(`[ASSISTENTE] Planilha enviada: ${conv.data.nome} | ${conv.data.email}`);
+            await msg.reply(
+                `Pronto, *${conv.data.nome}*! ✅\n\n` +
+                `A planilha foi enviada para *${conv.data.email}*.\n\n` +
+                'Confira a caixa de entrada e a de spam.\n\n' +
+                'Qualquer dúvida, estamos à disposição!'
+            );
+        } else {
+            await msg.reply(
+                `*${conv.data.nome}*, houve um problema no envio. 😕\n\n` +
+                'Vou avisar o Igor para enviar a planilha manualmente para você. Aguarde!'
+            );
+        }
+        return;
+    }
+
+    if (conv.step === 'idle') {
+        let contact = null;
+        try { contact = await msg.getContact(); } catch (e) {}
+
+        const nomeAgenda = contact ? (contact.name || contact.pushname || '') : '';
+        const isSaved = contact ? contact.isMyContact : false;
+
+        conv.data = {
+            numero: contact ? contact.number : chatId.replace('@c.us', ''),
+            salvo_na_agenda: isSaved,
+            nome_agenda: nomeAgenda,
+        };
+
+        console.log(`[ASSISTENTE] Contato: ${conv.data.numero} | Salvo: ${isSaved} | Nome: ${nomeAgenda || '-'}`);
+
+        if (isSaved && nomeAgenda) {
+            conv.data.nome = nomeAgenda;
+            conv.step = 'waiting_need';
+            await msg.reply(
+                `Olá, *${nomeAgenda}*!\n\n` +
+                'Agradecemos o seu contato com a *Igor Dev*.\n\n' +
+                'Como podemos ajudá-lo hoje? Descreva brevemente a sua necessidade ou o projeto que deseja discutir.'
+            );
+        } else {
+            conv.step = 'waiting_name';
+            await msg.reply(
+                'Olá!\n\n' +
+                'Obrigado por entrar em contato com a *Igor Dev*.\n\n' +
+                'Para prosseguirmos, poderia nos informar o *seu nome*, por favor?'
+            );
+        }
+        return;
+    }
+
+    if (conv.step === 'waiting_name') {
+        conv.data.nome = texto;
+        conv.step = 'waiting_need';
+        await msg.reply(
+            `Prazer, *${texto}*!\n\n` +
+            'Como podemos ajudá-lo? Descreva brevemente a sua necessidade ou o projeto que deseja discutir.'
+        );
+        return;
+    }
+
+    if (conv.step === 'waiting_need') {
+        conv.data.necessidade = texto;
+        conv.step = 'closing';
+        conv.closedAt = Date.now();
+
+        const nome = conv.data.nome || conv.data.nome_agenda || 'Cliente';
+        const salvo = conv.data.salvo_na_agenda ? '✅ Salvo na agenda' : '❌ Não salvo';
+
+        console.log('[ASSISTENTE] Atendimento finalizado:');
+        console.log(`  Nome: ${nome}`);
+        console.log(`  Número: +${conv.data.numero}`);
+        console.log(`  Agenda: ${salvo}`);
+        console.log(`  Necessidade: ${conv.data.necessidade}`);
+
+        await msg.reply(
+            'Recebemos sua solicitação. ✅\n\n' +
+            'O Igor analisará o seu caso com atenção e retornará com a melhor proposta em breve.\n\n' +
+            'Agradecemos o contato e estamos à disposição.'
+        );
+        return;
+    }
+}
 
 // ── Timeout helper ──
 function comTimeout(promise, ms, label = '') {
@@ -997,6 +1248,129 @@ app.get('/api/verificar-numero/:numero', requireReady, async (req, res) => {
     }
 });
 
+// Listar contatos salvos
+app.get('/api/contatos', requireReady, async (req, res) => {
+    try {
+        const now = Date.now();
+        if (contactsCache.length > 0 && (now - contactsCacheTime) < CONTACTS_CACHE_TTL) {
+            return res.json({ success: true, contatos: contactsCache, cache: true });
+        }
+
+        const contacts = await comTimeout(client.getContacts(), 30000, 'listar contatos');
+
+        contactsCache = contacts
+            .filter(c => c.isMyContact && c.id && c.id.user)
+            .map(c => ({
+                numero: c.number || c.id.user,
+                nome: c.name || c.pushname || '',
+                nome_agenda: c.name || '',
+                isMe: c.isMe || false,
+                bloqueado: isBlocked(c.number || c.id.user)
+            }))
+            .sort((a, b) => a.nome.localeCompare(b.nome, 'pt', { sensitivity: 'base' }));
+
+        contactsCacheTime = now;
+
+        res.json({ success: true, contatos: contactsCache, total: contactsCache.length });
+    } catch (error) {
+        console.error('[API] Erro ao listar contatos:', error.message);
+
+        if (contactsCache.length > 0) {
+            return res.json({
+                success: true,
+                contatos: contactsCache,
+                total: contactsCache.length,
+                cache: true,
+                aviso: 'Usando cache. Contatos podem estar desatualizados.'
+            });
+        }
+
+        res.status(500).json({ success: false, error: 'Erro ao listar contatos', detalhes: error.message });
+    }
+});
+
+// Listar contatos bloqueados
+app.get('/api/bloqueados', (req, res) => {
+    const lista = [...blockedContacts].map(num => {
+        const contato = contactsCache.find(c => c.numero === num);
+        return { numero: num, nome: contato ? contato.nome : '' };
+    });
+    res.json({ success: true, bloqueados: lista, total: lista.length });
+});
+
+// Bloquear contato
+app.post('/api/bloquear/:numero', (req, res) => {
+    const limpo = String(req.params.numero).replace(/\D/g, '');
+
+    if (limpo.length < 10) {
+        return res.status(400).json({ success: false, error: 'Número inválido' });
+    }
+
+    if (blockedContacts.has(limpo)) {
+        return res.json({ success: true, mensagem: 'Contato já estava bloqueado', numero: limpo });
+    }
+
+    blockedContacts.add(limpo);
+    saveBlocklist();
+
+    // Atualiza cache
+    const cacheEntry = contactsCache.find(c => c.numero === limpo);
+    if (cacheEntry) cacheEntry.bloqueado = true;
+
+    // Limpa conversa ativa se existir
+    const chatId = limpo + '@c.us';
+    if (conversations.has(chatId)) {
+        conversations.delete(chatId);
+    }
+
+    console.log(`[BLOCKLIST] Contato bloqueado: ${limpo}`);
+    res.json({ success: true, mensagem: 'Contato bloqueado com sucesso', numero: limpo });
+});
+
+// Desbloquear contato
+app.post('/api/desbloquear/:numero', (req, res) => {
+    const limpo = String(req.params.numero).replace(/\D/g, '');
+
+    if (!blockedContacts.has(limpo)) {
+        return res.json({ success: true, mensagem: 'Contato não estava bloqueado', numero: limpo });
+    }
+
+    blockedContacts.delete(limpo);
+    saveBlocklist();
+
+    // Atualiza cache
+    const cacheEntry = contactsCache.find(c => c.numero === limpo);
+    if (cacheEntry) cacheEntry.bloqueado = false;
+
+    console.log(`[BLOCKLIST] Contato desbloqueado: ${limpo}`);
+    res.json({ success: true, mensagem: 'Contato desbloqueado com sucesso', numero: limpo });
+});
+
+// Recarregar cache de contatos (força refresh)
+app.post('/api/contatos/refresh', requireReady, async (req, res) => {
+    try {
+        contactsCacheTime = 0;
+        const contacts = await comTimeout(client.getContacts(), 30000, 'refresh contatos');
+
+        contactsCache = contacts
+            .filter(c => c.isMyContact && c.id && c.id.user)
+            .map(c => ({
+                numero: c.number || c.id.user,
+                nome: c.name || c.pushname || '',
+                nome_agenda: c.name || '',
+                isMe: c.isMe || false,
+                bloqueado: isBlocked(c.number || c.id.user)
+            }))
+            .sort((a, b) => a.nome.localeCompare(b.nome, 'pt', { sensitivity: 'base' }));
+
+        contactsCacheTime = Date.now();
+
+        res.json({ success: true, contatos: contactsCache, total: contactsCache.length });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Erro ao recarregar contatos', detalhes: error.message });
+    }
+});
+
 // Desconectar
 app.post('/api/logout', async (req, res) => {
     try {
@@ -1119,6 +1493,12 @@ const server = app.listen(PORTA, HOST, () => {
     console.log('  POST /api/enviar-botoes           - Enviar botões de resposta');
     console.log('  POST /api/logout                  - Desconectar');
     console.log('  POST /api/reiniciar               - Reiniciar cliente');
+    console.log('  GET  /api/contatos                - Listar contatos salvos');
+    console.log('  POST /api/contatos/refresh        - Atualizar cache de contatos');
+    console.log('  GET  /api/bloqueados              - Listar contatos bloqueados');
+    console.log('  POST /api/bloquear/:numero        - Bloquear contato');
+    console.log('  POST /api/desbloquear/:numero     - Desbloquear contato');
+    console.log('  GET  /                            - Painel de gerenciamento');
     console.log('');
     console.log('[CONFIG] Timeout operações:', CONFIG.OPERATION_TIMEOUT_MS / 1000, 's');
     console.log('[CONFIG] Delay entre bulk:', CONFIG.BULK_DELAY_MS, 'ms');

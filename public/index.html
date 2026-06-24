@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Igor Dev - Gerenciamento de Contatos</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #0f0f11;
+            color: #e4e4e7;
+            min-height: 100vh;
+        }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        header {
+            background: #1a1a1e;
+            border: 1px solid #27272a;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        header h1 { font-size: 1.25rem; font-weight: 600; }
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        .status-badge.online { background: #065f46; color: #6ee7b7; }
+        .status-badge.offline { background: #7f1d1d; color: #fca5a5; }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            display: inline-block;
+        }
+        .status-dot.online { background: #34d399; box-shadow: 0 0 6px #34d399; }
+        .status-dot.offline { background: #f87171; }
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .search-box {
+            flex: 1;
+            min-width: 200px;
+            background: #1a1a1e;
+            border: 1px solid #27272a;
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: #e4e4e7;
+            font-size: 0.9rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .search-box:focus { border-color: #22c55e; }
+        .search-box::placeholder { color: #52525b; }
+        .btn {
+            padding: 10px 18px;
+            border-radius: 8px;
+            border: none;
+            font-size: 0.85rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-primary { background: #16a34a; color: #fff; }
+        .btn-primary:hover { background: #15803d; }
+        .btn-outline { background: transparent; border: 1px solid #3f3f46; color: #a1a1aa; }
+        .btn-outline:hover { background: #27272a; color: #e4e4e7; }
+        .btn-danger { background: transparent; border: 1px solid #7f1d1d; color: #fca5a5; }
+        .btn-danger:hover { background: #7f1d1d; color: #fff; }
+        .stats {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .stat-card {
+            background: #1a1a1e;
+            border: 1px solid #27272a;
+            border-radius: 8px;
+            padding: 12px 16px;
+            flex: 1;
+            min-width: 120px;
+        }
+        .stat-card .value { font-size: 1.5rem; font-weight: 700; }
+        .stat-card .label { font-size: 0.75rem; color: #71717a; margin-top: 2px; }
+        .stat-card.blocked .value { color: #f87171; }
+        .table-wrapper {
+            background: #1a1a1e;
+            border: 1px solid #27272a;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #71717a;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #27272a;
+            background: #18181b;
+        }
+        td { padding: 12px 16px; border-bottom: 1px solid #1f1f23; font-size: 0.9rem; }
+        tr:last-child td { border-bottom: none; }
+        tr.contato-blocked { background: rgba(239,68,68,0.06); }
+        tr.contato-blocked td { color: #a1a1aa; }
+        .contact-name { font-weight: 500; }
+        .contact-number { color: #71717a; font-size: 0.8rem; font-family: monospace; }
+        .toggle-wrapper { display: flex; align-items: center; }
+        .toggle {
+            position: relative;
+            width: 44px;
+            height: 24px;
+            cursor: pointer;
+        }
+        .toggle input { display: none; }
+        .toggle-slider {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #22c55e;
+            border-radius: 24px;
+            transition: 0.2s;
+        }
+        .toggle-slider::before {
+            content: '';
+            position: absolute;
+            width: 18px; height: 18px;
+            left: 3px; bottom: 3px;
+            background: #fff;
+            border-radius: 50%;
+            transition: 0.2s;
+        }
+        .toggle input:checked + .toggle-slider { background: #52525b; }
+        .toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
+        .toggle-label {
+            margin-left: 8px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+        .toggle-label.active { color: #4ade80; }
+        .toggle-label.blocked { color: #f87171; }
+        .empty-state {
+            text-align: center;
+            padding: 48px 20px;
+            color: #52525b;
+        }
+        .empty-state .icon { font-size: 2rem; margin-bottom: 8px; }
+        .loading-spinner {
+            display: inline-block;
+            width: 16px; height: 16px;
+            border: 2px solid #3f3f46;
+            border-top-color: #22c55e;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .toast {
+            position: fixed;
+            top: 16px;
+            right: 16px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            z-index: 1000;
+            animation: slideIn 0.2s ease;
+            max-width: 360px;
+        }
+        .toast.success { background: #065f46; color: #6ee7b7; border: 1px solid #059669; }
+        .toast.error { background: #7f1d1d; color: #fca5a5; border: 1px solid #dc2626; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+        .badge-blocked { background: #7f1d1d; color: #fca5a5; }
+        .badge-you { background: #1e3a5f; color: #93c5fd; }
+        @media (max-width: 600px) {
+            .container { padding: 12px; }
+            header { flex-direction: column; align-items: flex-start; }
+            .stats { flex-direction: column; }
+            th:nth-child(2), td:nth-child(2) { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>Igor Dev - Contatos WhatsApp</h1>
+                <div style="margin-top:4px;font-size:0.8rem;color:#71717a">Gerenciamento do bot de atendimento</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+                <span class="status-badge" id="statusBadge">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Verificando...</span>
+                </span>
+            </div>
+        </header>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="value" id="totalContatos">-</div>
+                <div class="label">Contatos salvos</div>
+            </div>
+            <div class="stat-card blocked">
+                <div class="value" id="totalBloqueados">-</div>
+                <div class="label">Contatos bloqueados</div>
+            </div>
+        </div>
+
+        <div class="toolbar">
+            <input type="text" class="search-box" id="searchInput" placeholder="Buscar por nome ou número..." oninput="filterContacts()">
+            <button class="btn btn-outline" onclick="refreshContacts()" id="btnRefresh">
+                <span>&#8635;</span> Atualizar
+            </button>
+            <button class="btn btn-outline" onclick="showBlockedOnly()" id="btnFilterBlocked">
+                Bloqueados
+            </button>
+        </div>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Contato</th>
+                        <th>Número</th>
+                        <th style="width:140px">Bot</th>
+                    </tr>
+                </thead>
+                <tbody id="contactsBody">
+                    <tr>
+                        <td colspan="3">
+                            <div class="empty-state">
+                                <div class="icon">&#128269;</div>
+                                <div>Carregando contatos...</div>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let contacts = [];
+        let showOnlyBlocked = false;
+
+        async function checkStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                const dot = document.getElementById('statusDot');
+                const text = document.getElementById('statusText');
+                const badge = document.getElementById('statusBadge');
+                if (data.pronto) {
+                    dot.className = 'status-dot online';
+                    text.textContent = 'Bot online';
+                    badge.className = 'status-badge online';
+                } else {
+                    dot.className = 'status-dot offline';
+                    text.textContent = data.status || 'Offline';
+                    badge.className = 'status-badge offline';
+                }
+            } catch (e) {
+                document.getElementById('statusDot').className = 'status-dot offline';
+                document.getElementById('statusText').textContent = 'Erro de conexão';
+                document.getElementById('statusBadge').className = 'status-badge offline';
+            }
+        }
+
+        async function loadContacts() {
+            try {
+                const res = await fetch('/api/contatos');
+                const data = await res.json();
+                if (data.success) {
+                    contacts = data.contatos;
+                    document.getElementById('totalContatos').textContent = contacts.length;
+                    const blockedCount = contacts.filter(c => c.bloqueado).length;
+                    document.getElementById('totalBloqueados').textContent = blockedCount;
+                    renderContacts();
+                } else {
+                    showToast('Erro ao carregar contatos: ' + (data.error || 'Desconhecido'), 'error');
+                }
+            } catch (e) {
+                showToast('Erro de conexão ao carregar contatos', 'error');
+            }
+        }
+
+        function renderContacts() {
+            const tbody = document.getElementById('contactsBody');
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            let filtered = contacts;
+
+            if (showOnlyBlocked) {
+                filtered = filtered.filter(c => c.bloqueado);
+            }
+
+            if (searchTerm) {
+                filtered = filtered.filter(c =>
+                    c.nome.toLowerCase().includes(searchTerm) ||
+                    c.numero.includes(searchTerm)
+                );
+            }
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="3">
+                    <div class="empty-state">
+                        <div class="icon">${showOnlyBlocked ? '&#128274;' : '&#128269;'}</div>
+                        <div>${showOnlyBlocked ? 'Nenhum contato bloqueado' : 'Nenhum contato encontrado'}</div>
+                    </div>
+                </td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = filtered.map(c => {
+                const blockedClass = c.bloqueado ? 'contato-blocked' : '';
+                const youBadge = c.isMe ? '<span class="badge badge-you">Você</span>' : '';
+                const blockedBadge = c.bloqueado ? '<span class="badge badge-blocked">Bloqueado</span>' : '';
+                return `
+                <tr class="${blockedClass}">
+                    <td>
+                        <div class="contact-name">${escapeHtml(c.nome || 'Sem nome')} ${youBadge} ${blockedBadge}</div>
+                    </td>
+                    <td><span class="contact-number">+${c.numero}</span></td>
+                    <td>
+                        <div class="toggle-wrapper">
+                            <label class="toggle" onclick="toggleBlock('${c.numero}', ${c.bloqueado})">
+                                <input type="checkbox" ${c.bloqueado ? 'checked' : ''}>
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span class="toggle-label ${c.bloqueado ? 'blocked' : 'active'}">
+                                ${c.bloqueado ? 'Desligado' : 'Ligado'}
+                            </span>
+                        </div>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function toggleBlock(numero, currentlyBlocked) {
+            const endpoint = currentlyBlocked ? '/api/desbloquear/' : '/api/bloquear/';
+            try {
+                const res = await fetch(endpoint + numero, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    const contact = contacts.find(c => c.numero === numero);
+                    if (contact) contact.bloqueado = !currentlyBlocked;
+                    document.getElementById('totalBloqueados').textContent = contacts.filter(c => c.bloqueado).length;
+                    renderContacts();
+                    showToast(currentlyBlocked ? 'Bot reativado para o contato' : 'Bot desligado para o contato', 'success');
+                } else {
+                    showToast(data.error || 'Erro na operação', 'error');
+                }
+            } catch (e) {
+                showToast('Erro de conexão', 'error');
+            }
+        }
+
+        function filterContacts() {
+            renderContacts();
+        }
+
+        function showBlockedOnly() {
+            showOnlyBlocked = !showOnlyBlocked;
+            const btn = document.getElementById('btnFilterBlocked');
+            btn.textContent = showOnlyBlocked ? 'Mostrar todos' : 'Bloqueados';
+            renderContacts();
+        }
+
+        async function refreshContacts() {
+            const btn = document.getElementById('btnRefresh');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading-spinner"></span> Atualizando...';
+            try {
+                await fetch('/api/contatos/refresh', { method: 'POST' });
+                await loadContacts();
+                showToast('Contatos atualizados', 'success');
+            } catch (e) {
+                showToast('Erro ao atualizar contatos', 'error');
+            }
+            btn.disabled = false;
+            btn.innerHTML = '<span>&#8635;</span> Atualizar';
+        }
+
+        function showToast(message, type) {
+            const existing = document.querySelector('.toast');
+            if (existing) existing.remove();
+            const toast = document.createElement('div');
+            toast.className = 'toast ' + type;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        checkStatus();
+        loadContacts();
+        setInterval(checkStatus, 15000);
+    </script>
+</body>
+</html>
